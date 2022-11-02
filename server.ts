@@ -15,6 +15,7 @@ import { frameguard } from 'helmet'
 import { parse } from 'useragent'
 import anonymize from 'ip-anonymize'
 import { program as cli } from 'commander'
+import PromClient from "prom-client";
 
 process.title = 'peertube'
 
@@ -28,6 +29,8 @@ import { checkMissedConfig, checkFFmpeg, checkNodeVersion } from './server/initi
 import { CONFIG } from './server/initializers/config'
 import { API_VERSION, FILES_CACHE, WEBSERVER, loadLanguages } from './server/initializers/constants'
 import { logger } from './server/helpers/logger'
+import { logMiddleware } from './server/middlewares'
+import responseTime from './server/middlewares';
 
 const missed = checkMissedConfig()
 if (missed.length !== 0) {
@@ -164,6 +167,19 @@ token('user-agent', (req: express.Request) => {
   return req.get('user-agent')
 })
 
+const collectDefaultMetrics = PromClient.collectDefaultMetrics;
+collectDefaultMetrics({});
+
+export const promReqHistogram = new PromClient.Histogram({
+  name: 'api_req_duration',
+  help: 'Duration of HTTP requests in ms',
+  labelNames: ['method', 'route', 'status_code'],
+});
+
+const pinoLogger = logMiddleware('api');
+
+app.use(pinoLogger);
+
 // Turn off GET queries logs
 // app.use(morgan('combined', {
 //   stream: {
@@ -205,24 +221,30 @@ const apiRoute = '/api/' + API_VERSION
 app.use(apiRoute, apiRouter)
 
 // Services (oembed...)
-app.use('/services', servicesRouter)
+app.use('/services', responseTime(), servicesRouter)
 
 // Live streaming
-app.use('/live', liveRouter)
+app.use('/live', responseTime(), liveRouter)
 
 // Plugins & themes
-app.use('/', pluginsRouter)
+app.use('/', responseTime(), pluginsRouter)
 
-app.use('/', activityPubRouter)
-app.use('/', feedsRouter)
-app.use('/', webfingerRouter)
-app.use('/', trackerRouter)
-app.use('/', botsRouter)
+app.use('/', responseTime(), activityPubRouter)
+app.use('/', responseTime(), feedsRouter)
+app.use('/', responseTime(), webfingerRouter)
+app.use('/', responseTime(), trackerRouter)
+app.use('/', responseTime(), botsRouter)
 
 // Static files
-app.use('/', staticRouter)
-app.use('/', downloadRouter)
-app.use('/', lazyStaticRouter)
+app.use('/', responseTime(), staticRouter)
+app.use('/', responseTime(), downloadRouter)
+app.use('/', responseTime(), lazyStaticRouter)
+
+// Metrics
+app.get("/-/metrics", async (req: express.Request, res: express.Response) => {
+  res.set("Content-Type", PromClient.register.contentType);
+  res.send(await PromClient.register.metrics());
+});
 
 // Client files, last valid routes!
 const cliOptions = cli.opts()
